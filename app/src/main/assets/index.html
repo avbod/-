@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>鸽子棋盘截图标注器 v1.0</title>
+<style>
+*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f4f5f7;color:#222}
+.wrap{max-width:1100px;margin:auto;padding:16px}.panel{background:#fff;border-radius:14px;padding:14px;margin-bottom:14px;box-shadow:0 2px 12px #0001}
+h1{font-size:20px;margin:0 0 8px}.muted{color:#666;font-size:13px}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+button,input{font:inherit} button{border:0;border-radius:9px;padding:10px 14px;background:#2563eb;color:#fff;cursor:pointer}button.secondary{background:#64748b}button.good{background:#059669}
+input[type=number]{width:70px;padding:8px;border:1px solid #ccd1d8;border-radius:8px}
+#cv{width:100%;max-height:72vh;object-fit:contain;background:#111;border-radius:10px;touch-action:none}
+.status{padding:9px;border-radius:8px;background:#f1f5f9;font-size:13px;white-space:pre-wrap}
+.legend{font-size:13px;line-height:1.6}
+.warn{color:#92400e;background:#fffbeb;padding:9px;border-radius:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="panel">
+<h1>鸽子棋盘截图标注器 v1.0</h1>
+<div class="muted">上传游戏截图 → 框选棋盘 → 输入行列数 → 自动识别颜色区域 → 按“每行/列一个、每色块最多一个、上下左右不相邻”求解 → 在原截图上标注。</div>
+</div>
+
+<div class="panel">
+<div class="row">
+<input id="file" type="file" accept="image/*">
+<label>行 <input id="rows" type="number" min="2" max="20" value="8"></label>
+<label>列 <input id="cols" type="number" min="2" max="20" value="8"></label>
+<button id="auto">自动尝试识别棋盘</button>
+<button id="solve">求解并标注</button>
+<button id="clear" class="secondary">清除标注</button>
+<button id="save" class="good">导出标注图</button>
+</div>
+<div style="height:10px"></div>
+<div class="warn">如果自动识别的棋盘范围不准：在图片上<strong>拖动框选整个彩色棋盘</strong>，然后再点“求解并标注”。</div>
+</div>
+
+<div class="panel">
+<canvas id="cv"></canvas>
+<div style="height:10px"></div>
+<div id="status" class="status">请先上传截图。</div>
+</div>
+
+<div class="panel legend">
+<strong>操作说明</strong><br>
+1. 上传截图。<br>
+2. 默认按 8×8 处理；如果关卡不是 8×8，修改行列数。<br>
+3. 可以拖动鼠标/手指框选彩色棋盘。<br>
+4. 点击“求解并标注”，绿色圆点表示程序找到的一组鸽子位置。<br>
+5. 本版本只做<strong>识别+标注</strong>，不会自动点击游戏，也不会上传图片到服务器：计算全部在浏览器本地完成。
+</div>
+</div>
+
+<script>
+const cv=document.getElementById('cv'), ctx=cv.getContext('2d');
+const fileEl=document.getElementById('file'), rowsEl=document.getElementById('rows'), colsEl=document.getElementById('cols');
+const statusEl=document.getElementById('status');
+let img=new Image(), imgLoaded=false, imgScale=1, board=null, selection=null, dragging=false, dragStart=null, annotated=false;
+
+function msg(s){statusEl.textContent=s}
+function fitCanvas(){
+  if(!imgLoaded)return;
+  const maxW=Math.min(window.innerWidth-32,1060), maxH=window.innerHeight*.72;
+  imgScale=Math.min(1,maxW/img.naturalWidth,maxH/img.naturalHeight);
+  cv.width=Math.round(img.naturalWidth*imgScale); cv.height=Math.round(img.naturalHeight*imgScale);
+  draw();
+}
+function draw(){
+  if(!imgLoaded)return;
+  ctx.clearRect(0,0,cv.width,cv.height);
+  ctx.drawImage(img,0,0,cv.width,cv.height);
+  if(board){
+    ctx.strokeStyle='#00d084';ctx.lineWidth=3;
+    ctx.strokeRect(board.x*imgScale,board.y*imgScale,board.w*imgScale,board.h*imgScale);
+  }
+  if(selection){
+    ctx.strokeStyle='#ffb000';ctx.lineWidth=3;ctx.setLineDash([8,6]);
+    ctx.strokeRect(selection.x*imgScale,selection.y*imgScale,selection.w*imgScale,selection.h*imgScale);
+    ctx.setLineDash([]);
+  }
+}
+fileEl.onchange=()=>{
+  const f=fileEl.files[0]; if(!f)return;
+  const u=URL.createObjectURL(f); img.onload=()=>{imgLoaded=true;board=null;selection=null;fitCanvas();msg('截图已载入。可直接框选彩色棋盘，或点击“自动尝试识别棋盘”。');}; img.src=u;
+};
+window.onresize=fitCanvas;
+
+function canvasPoint(e){
+  const r=cv.getBoundingClientRect();
+  return {x:(e.clientX-r.left)/imgScale,y:(e.clientY-r.top)/imgScale};
+}
+cv.addEventListener('pointerdown',e=>{
+  if(!imgLoaded)return;
+  dragging=true;dragStart=canvasPoint(e);cv.setPointerCapture(e.pointerId);
+});
+cv.addEventListener('pointermove',e=>{
+  if(!dragging)return;
+  const p=canvasPoint(e), x=Math.min(dragStart.x,p.x), y=Math.min(dragStart.y,p.y);
+  selection={x,y,w:Math.abs(p.x-dragStart.x),h:Math.abs(p.y-dragStart.y)};draw();
+});
+cv.addEventListener('pointerup',e=>{
+  if(!dragging)return;dragging=false;
+  if(selection.w<20||selection.h<20)selection=null; else board={...selection};
+  draw();
+});
+
+function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
+function rgbAt(data,w,x,y){
+  x=clamp(Math.round(x),0,w-1);y=clamp(Math.round(y),0,Math.floor(data.length/(w*4))-1);
+  const i=(y*w+x)*4;return [data[i],data[i+1],data[i+2]];
+}
+function sat(c){let mx=Math.max(...c),mn=Math.min(...c);return mx?((mx-mn)/mx):0}
+function autoDetect(){
+  if(!imgLoaded)return;
+  const w=img.naturalWidth,h=img.naturalHeight;
+  const off=document.createElement('canvas'),ow=Math.min(300,w),oh=Math.round(h*ow/w);off.width=ow;off.height=oh;
+  const ox=off.getContext('2d');ox.drawImage(img,0,0,ow,oh);
+  const d=ox.getImageData(0,0,ow,oh).data;
+  let minX=ow,minY=oh,maxX=-1,maxY=-1,count=0;
+  // Look for a dense region of moderately saturated pixels. This is a heuristic.
+  for(let y=0;y<oh;y++)for(let x=0;x<ow;x++){
+    const i=(y*ow+x)*4,c=[d[i],d[i+1],d[i+2]];
+    if(sat(c)>.12 && Math.max(...c)>70 && Math.min(...c)<245){
+      minX=Math.min(minX,x);minY=Math.min(minY,y);maxX=Math.max(maxX,x);maxY=Math.max(maxY,y);count++;
+    }
+  }
+  if(count<ow*oh*.03){msg('自动识别没有找到明显彩色棋盘，请手动拖框。');return}
+  // Prefer central/lower area and add a small margin.
+  let bx=minX/ow*w, by=minY/oh*h, bw=(maxX-minX+1)/ow*w, bh=(maxY-minY+1)/oh*h;
+  const mx=bw*.015,my=bh*.015; bx=clamp(bx-mx,0,w);by=clamp(by-my,0,h);bw=Math.min(w-bx,bw+2*mx);bh=Math.min(h-by,bh+2*my);
+  board={x:bx,y:by,w:bw,h:bh};selection=null;draw();
+  msg('已自动估计棋盘范围（绿色框）。如果绿色框没有完整覆盖彩色棋盘，请手动拖框修正。');
+}
+document.getElementById('auto').onclick=autoDetect;
+
+function colorDist(a,b){return Math.sqrt((a[0]-b[0])**2+(a[1]-b[1])**2+(a[2]-b[2])**2)}
+function getGrid(){
+  if(!board)throw Error('还没有棋盘范围，请先自动识别或手动框选。');
+  const R=+rowsEl.value,C=+colsEl.value;
+  const oc=document.createElement('canvas');oc.width=img.naturalWidth;oc.height=img.naturalHeight;
+  const o=oc.getContext('2d');o.drawImage(img,0,0);
+  const data=o.getImageData(0,0,oc.width,oc.height).data;
+  const cells=[];
+  for(let r=0;r<R;r++){
+    cells[r]=[];
+    for(let c=0;c<C;c++){
+      const x=board.x+(c+.5)*board.w/C,y=board.y+(r+.5)*board.h/R;
+      // average a small central patch to avoid grid lines
+      let rr=0,gg=0,bb=0,n=0;
+      const rad=Math.max(1,Math.floor(Math.min(board.w/C,board.h/R)*.12));
+      for(let yy=-rad;yy<=rad;yy+=Math.max(1,Math.floor(rad/3)))
+        for(let xx=-rad;xx<=rad;xx+=Math.max(1,Math.floor(rad/3))){
+          const q=rgbAt(data,oc.width,x+xx,y+yy);rr+=q[0];gg+=q[1];bb+=q[2];n++;
+        }
+      cells[r][c]=[rr/n,gg/n,bb/n];
+    }
+  }
+  return {R,C,cells};
+}
+function buildGroups(g){
+  const {R,C,cells}=g;
+  // Quantize colors, then connected components = color groups.
+  const q=cells.map(row=>row.map(c=>c.map(v=>Math.round(v/18)*18)));
+  const id=Array.from({length:R},()=>Array(C).fill(-1));let gid=0;
+  const neigh=[[1,0],[-1,0],[0,1],[0,-1]];
+  for(let r=0;r<R;r++)for(let c=0;c<C;c++)if(id[r][c]<0){
+    id[r][c]=gid;const stack=[[r,c]];
+    while(stack.length){
+      const [a,b]=stack.pop();
+      for(const [dr,dc] of neigh){const nr=a+dr,nc=b+dc;
+        if(nr>=0&&nr<R&&nc>=0&&nc<C&&id[nr][nc]<0&&colorDist(q[a][b],q[nr][nc])<45){
+          id[nr][nc]=gid;stack.push([nr,nc]);
+        }
+      }
+    } gid++;
+  }
+  return {id,groupCount:gid};
+}
+function solveGrid(g,groups){
+  const {R,C}=g,{id}=groups;
+  const rowUsed=Array(R).fill(false),colUsed=Array(C).fill(false),grpUsed=Array(groups.groupCount).fill(false);
+  const ans=[];
+  const cells=Array.from({length:R},(_,r)=>Array.from({length:C},(_,c)=>({r,c})));
+  // MRV: choose an unfilled row with fewest legal cells, while ensuring columns/groups.
+  function rec(r){
+    if(r===R)return true;
+    // choose the remaining row with minimum candidates
+    let br=-1,bcand=null;
+    for(let rr=0;rr<R;rr++)if(!rowUsed[rr]){
+      const cand=[];
+      for(let c=0;c<C;c++){
+        if(colUsed[c]||grpUsed[id[rr][c]])continue;
+        if((rr>0 && ans.some(p=>p.r===rr-1&&p.c===c))||(rr<R-1 && ans.some(p=>p.r===rr+1&&p.c===c)))continue;
+        cand.push(c);
+      }
+      if(!cand.length)return false;
+      if(!bcand||cand.length<bcand.length){br=rr;bcand=cand;if(cand.length===1)break;}
+    }
+    rowUsed[br]=true;
+    for(const c of bcand){
+      // Orthogonal adjacency against already placed pigeons.
+      if(ans.some(p=>(Math.abs(p.r-br)+Math.abs(p.c-c))===1))continue;
+      colUsed[c]=true;grpUsed[id[br][c]]=true;ans.push({r:br,c});
+      if(rec(r+1))return true;
+      ans.pop();grpUsed[id[br][c]]=false;colUsed[c]=false;
+    }
+    rowUsed[br]=false;return false;
+  }
+  return rec(0)?ans.slice():null;
+}
+function drawSolution(solution,g){
+  draw();
+  const R=g.R,C=g.C;
+  const s=imgScale;
+  ctx.save();
+  ctx.strokeStyle='#00e676';ctx.fillStyle='#00e676';ctx.lineWidth=Math.max(3,4*s);
+  for(const p of solution){
+    const cx=(board.x+(p.c+.5)*board.w/C)*s,cy=(board.y+(p.r+.5)*board.h/R)*s;
+    ctx.beginPath();ctx.arc(cx,cy,Math.min(board.w/C,board.h/R)*.24*s,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#fff';ctx.font=`bold ${Math.max(12,Math.min(board.w/C,board.h/R)*.25*s)}px sans-serif`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('鸽',cx,cy);
+    ctx.fillStyle='#00e676';
+  }
+  ctx.restore();annotated=true;
+}
+document.getElementById('solve').onclick=()=>{
+  try{
+    if(!imgLoaded){msg('请先上传截图。');return}
+    const g=getGrid(),groups=buildGroups(g),sol=solveGrid(g,groups);
+    if(!sol){msg(`识别到 ${g.R}×${g.C} 棋盘、${groups.groupCount} 个颜色区域，但没有找到满足规则的解。\\n请检查棋盘框选范围、行列数，或颜色区域识别是否正确。`);return}
+    drawSolution(sol,g);
+    msg(`完成：${g.R}×${g.C}\\n识别颜色区域：${groups.groupCount}\\n找到一组可行位置：${sol.map(p=>`第${p.r+1}行第${p.c+1}列`).join('、')}`);
+  }catch(e){msg('错误：'+e.message)}
+};
+document.getElementById('clear').onclick=()=>{annotated=false;draw();msg('已清除标注。')};
+document.getElementById('save').onclick=()=>{
+  if(!imgLoaded||!annotated){msg('请先求解并产生标注。');return}
+  const a=document.createElement('a');a.download='pigeon-solved.png';a.href=cv.toDataURL('image/png');a.click();
+};
+</script>
+</body>
+</html>
